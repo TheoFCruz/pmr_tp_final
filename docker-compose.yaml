@@ -1,0 +1,33 @@
+services:  
+  # Crazysim container
+  crazysim:
+    profiles: 
+      - full-sim
+    build:
+      context: ./
+      dockerfile: docker/sim.Dockerfile
+      target: crazysim
+    image: crazysim:humble
+    container_name: crazysim
+    privileged: true
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - ROS_DOMAIN_ID=42
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+    volumes:
+      - .:/workspace
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./sim/crazyflies.yaml:/CrazySim/crazyswarm2_ws/src/crazyswarm2/crazyflie/config/crazyflies.yaml
+      - ./sim/agents.txt:/CrazySim/crazyflie-firmware/tools/crazyflie-simulation/simulator_files/gazebo/launch/drone_spawn_list/agents.txt
+    devices:
+      - /dev/dri:/dev/dri
+    # gpus: all  # remove for nvidia gpus
+    command: bash
+    tty: true            # Keeps the container running
+    stdin_open: true     # Allows you to interact with the shell
+    network_mode: "host"
+    ipc: "host"

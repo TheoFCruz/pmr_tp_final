@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>pmr_tp_final</name>
+  <version>0.0.1</version>
+  <description>Implementation of collision avoidance with VO CBFs with slack and safety CBFs</description>
+  <maintainer email="theofonsecacruz@gmail.com">Theo Cruz</maintainer>
+  <maintainer email="nikolasbarbosaextras@gmail.com">Nikolas Barbosa</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>nav2_map_server</depend>
+  <depend>nav2_lifecycle_manager</depend>
+  <exec_depend>python3-gurobipy</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
