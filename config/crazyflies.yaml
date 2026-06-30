@@ -86,7 +86,7 @@ all:
         frequency: 1 # Hz
     custom_topics:
       state:
-        frequency: 50 # Hz
+        frequency: 20 # Hz
         vars:
           - "stateEstimate.x"
           - "stateEstimate.y"

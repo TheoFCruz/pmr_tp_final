@@ -23,11 +23,16 @@ class AccelerationCommander:
     """Publish one drone's acceleration commands as ``FullState``.
 
     The CBF/VO controller should compute acceleration in the horizontal plane.
-    This class converts that acceleration into a short-horizon full-state
-    reference:
+    This class converts acceleration commands into an internally integrated
+    double-integrator reference trajectory:
 
-    ``v_ref = v_meas + a_des * dt``
-    ``p_ref = p_meas + v_meas * dt + 0.5 * a_des * dt**2``
+    ``v_ref[k+1] = v_ref[k] + a_des * dt``
+    ``p_ref[k+1] = p_ref[k] + v_ref[k] * dt + 0.5 * a_des * dt**2``
+
+    The first reference position is initialized from the measured position.
+    After that, measured state feedback should be handled by the outer
+    controller that computes ``a_des``; the full-state message remains a
+    smooth, self-consistent trajectory for the Crazyflie inner loop to track.
     """
 
     def __init__(
@@ -48,6 +53,8 @@ class AccelerationCommander:
         self._yaw = yaw
         self._max_velocity = max_velocity
         self._max_acceleration = max_acceleration
+        self._p_ref_xy: Optional[np.ndarray] = None
+        self._v_ref_xy: Optional[np.ndarray] = None
         self._publisher: Publisher = node.create_publisher(
             FullState,
             f"/{robot_name}/{topic_suffix}",
@@ -72,13 +79,35 @@ class AccelerationCommander:
         current controller is expected to operate in the horizontal plane, so
         the generated command keeps altitude fixed at ``fixed_z``.
         """
+        del v_meas
+
         p_xy = np.asarray(p_meas, dtype=float)[:2]
-        v_xy = np.asarray(v_meas, dtype=float)[:2]
         a_xy = np.asarray(a_des, dtype=float)[:2]
 
+        if self._p_ref_xy is None or self._v_ref_xy is None:
+            self._p_ref_xy = p_xy.copy()
+            self._v_ref_xy = np.zeros(2)
+
         a_xy = self._clip_norm(a_xy, self._max_acceleration)
-        v_ref_xy = self._clip_norm(v_xy + a_xy * self._dt, self._max_velocity)
-        p_ref_xy = p_xy + v_xy * self._dt + 0.5 * a_xy * self._dt**2
+        previous_v_ref_xy = self._v_ref_xy
+        v_ref_xy = self._clip_norm(
+            previous_v_ref_xy + a_xy * self._dt,
+            self._max_velocity,
+        )
+
+        # If velocity clipping changed the next velocity, publish the effective
+        # acceleration so position, velocity, and acceleration stay consistent.
+        if self._dt > 0.0:
+            a_xy = (v_ref_xy - previous_v_ref_xy) / self._dt
+
+        p_ref_xy = (
+            self._p_ref_xy
+            + previous_v_ref_xy * self._dt
+            + 0.5 * a_xy * self._dt**2
+        )
+
+        self._p_ref_xy = p_ref_xy
+        self._v_ref_xy = v_ref_xy
 
         msg = self._make_full_state(
             p_ref_xy,
