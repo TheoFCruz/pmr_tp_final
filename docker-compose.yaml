@@ -1,4 +1,30 @@
 services:  
+  # ROS 2 Humble container for this controller package.
+  package-humble:
+    profiles:
+      - controller
+      - full-sim
+    build:
+      context: ./
+      dockerfile: docker/pkg.Dockerfile
+      target: pmr_tp_final_humble
+    image: pmr_tp_final:humble
+    container_name: pmr_tp_final
+    command: bash
+    network_mode: "host"
+    ipc: "host"
+    environment:
+      - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+      - ROS_DOMAIN_ID=42
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - .:/root/ros2_ws/src/pmr_tp_final
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    working_dir: /root/ros2_ws
+    tty: true
+    stdin_open: true
+
   # Crazysim container
   crazysim:
     profiles: 
@@ -19,13 +45,12 @@ services:
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
       - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
     volumes:
-      - .:/workspace
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - ./config/crazyflies.yaml:/CrazySim/crazyswarm2_ws/src/crazyswarm2/crazyflie/config/crazyflies.yaml
       - ./config/agents.txt:/CrazySim/crazyflie-firmware/tools/crazyflie-simulation/simulator_files/gazebo/launch/drone_spawn_list/agents.txt
     devices:
       - /dev/dri:/dev/dri
-    gpus: all  # remove for nvidia gpus
+    gpus: all  # uncomment for nvidia gpus
     command: bash
     tty: true            # Keeps the container running
     stdin_open: true     # Allows you to interact with the shell

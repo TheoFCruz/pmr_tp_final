@@ -33,7 +33,7 @@ class CbfAgentController(Node):
         self.declare_parameter("robot_id", robot_id)
         self.declare_parameter("robot_prefix", robot_prefix)
         self.declare_parameter("total_robots", total_robots)
-        self.declare_parameter("control_period", 0.05)
+        self.declare_parameter("control_period", 0.1)
         self.declare_parameter("fixed_z", 1.0)
         self.declare_parameter("max_velocity", 1.0)
         self.declare_parameter("max_acceleration", 1.0)
@@ -43,6 +43,7 @@ class CbfAgentController(Node):
         self._total_robots = self.get_parameter("total_robots").value
         self._control_period = self.get_parameter("control_period").value
         self._robot_name = self._make_robot_name(self._robot_id)
+        self._max_acceleration = self.get_parameter("max_acceleration").value
         self._neighbor_names = self._make_neighbor_names()
 
         self._states: Dict[str, AgentState] = {}
@@ -136,13 +137,33 @@ class CbfAgentController(Node):
         ego: AgentState,
         neighbors: Dict[str, AgentState],
     ) -> np.ndarray:
-        """Placeholder for the local CBF/VO QP.
+        """Placeholder PD position tracker for simulation bring-up.
 
-        This method should eventually use ``constraints.py`` and
-        ``optimizer.py`` to compute this agent's acceleration command.
+        This intentionally avoids CBF/QP logic while validating that state
+        logs are received and ``cmd_full_state`` commands move each drone.
         """
-        del ego, neighbors
-        return np.zeros(2)
+
+        position_refs = {
+            0: np.array([0.5, -0.5]),
+            1: np.array([1.5, -0.5]),
+            2: np.array([1.5, 0.5]),
+            3: np.array([0.5, 0.5]),
+        }
+        position_ref = position_refs.get(self._robot_id, np.zeros(2))
+        kp = 1.0
+        kd = 1.4
+
+        a_des = kp * (position_ref - ego.position) - kd * ego.velocity
+        return self._clip_norm(a_des, self._max_acceleration)
+
+    @staticmethod
+    def _clip_norm(vector: np.ndarray, max_norm: float) -> np.ndarray:
+        """Clip a vector to ``max_norm`` while preserving direction."""
+        norm = np.linalg.norm(vector)
+        if norm <= max_norm or norm == 0.0:
+            return vector
+
+        return vector * (max_norm / norm)
 
 
 def main(args: Optional[Sequence[str]] = None) -> None:
