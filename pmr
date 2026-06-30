@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/docker-compose.yaml}"
+COMPOSE_PROFILE="${COMPOSE_PROFILE:-full-sim}"
+CRAZYSIM_SERVICE="${CRAZYSIM_SERVICE:-crazysim}"
+PACKAGE_SERVICE="${PACKAGE_SERVICE:-package-humble}"
+BACKEND="${BACKEND:-cflib}"
+STARTUP_DELAY="${STARTUP_DELAY:-5}"
+TAKEOFF_DELAY="${TAKEOFF_DELAY:-3}"
+
+DOCKER_COMPOSE=(docker compose -f "$COMPOSE_FILE" --profile "$COMPOSE_PROFILE")
+BG_PIDS=()
+CLEANED_UP=0
+
+print_help() {
+  cat <<'EOF'
+pmr_tp_final helper
+
+Usage:
+  ./pmr <command> [args]
+
+Containers:
+  up | u                  Start CrazySim and controller containers
+  rebuild | rb            Rebuild images and recreate both containers
+  down | d                Stop and remove the compose stack
+  shell | sh <sim|pkg>    Open a shell in a container
+
+Launches:
+  sim-start | ss          Start CrazySim SITL/Gazebo firmware
+  swarm-start | cs [backend]
+                          Start Crazyswarm2 (default backend: cflib)
+  takeoff | to            Send takeoff command to all Crazyflies
+  controllers | ctrl [ros2 launch args...]
+                          Start pmr_tp_final controller.launch.py
+  all | a [backend]       Start containers, sim + Crazyswarm2 in background,
+                          take off, then run controllers in the foreground.
+                          Ctrl-C or controller exit stops the compose stack.
+
+Other:
+  build-ws | bw           Rebuild pmr_tp_final inside package-humble
+  help | -h | --help      Show this help
+
+Environment overrides:
+  COMPOSE_FILE, COMPOSE_PROFILE, CRAZYSIM_SERVICE, PACKAGE_SERVICE,
+  BACKEND, STARTUP_DELAY, TAKEOFF_DELAY
+
+Examples:
+  ./pmr up
+  ./pmr sim-start
+  ./pmr swarm-start cflib
+  ./pmr controllers total_robots:=4
+  ./pmr all
+  ./pmr shell pkg
+  ./pmr down
+EOF
+}
+
+dc() {
+  (cd "$ROOT_DIR" && "${DOCKER_COMPOSE[@]}" "$@")
+}
+
+allow_xhost() {
+  xhost +local:docker >/dev/null 2>&1 || xhost +local:root >/dev/null 2>&1 || true
+}
+
+up() {
+  allow_xhost
+  dc up -d "$CRAZYSIM_SERVICE" "$PACKAGE_SERVICE"
+}
+
+rebuild() {
+  allow_xhost
+  dc up -d --build --force-recreate "$CRAZYSIM_SERVICE" "$PACKAGE_SERVICE"
+}
+
+down() {
+  dc down
+}
+
+ensure_running() {
+  local service="$1"
+
+  if ! dc ps --status running --services | grep -qx "$service"; then
+    echo "Starting $service..." >&2
+    allow_xhost
+    dc up -d "$service"
+  fi
+}
+
+exec_sim() {
+  ensure_running "$CRAZYSIM_SERVICE"
+  dc exec "$CRAZYSIM_SERVICE" bash -lc "$1"
+}
+
+exec_pkg() {
+  ensure_running "$PACKAGE_SERVICE"
+  dc exec "$PACKAGE_SERVICE" bash -lc "$1"
+}
+
+exec_bg() {
+  local service="$1"
+  local logfile="$2"
+  local cmd="$3"
+
+  ensure_running "$service"
+  dc exec -T "$service" bash -lc "$cmd" >"$logfile" 2>&1 &
+  BG_PIDS+=("$!")
+  echo "$service command started in background (PID: $!). Log: $logfile"
+}
+
+cleanup_all() {
+  trap - INT TERM EXIT
+
+  if [[ "$CLEANED_UP" -eq 1 ]]; then
+    return
+  fi
+
+  CLEANED_UP=1
+  echo
+  echo "Stopping simulation stack..."
+
+  for pid in "${BG_PIDS[@]}"; do
+    kill "$pid" >/dev/null 2>&1 || true
+  done
+
+  down || true
+}
+
+shell() {
+  if [[ "$#" -lt 1 ]]; then
+    echo "Usage: ./pmr shell <sim|pkg>" >&2
+    return 2
+  fi
+
+  case "$1" in
+    sim|crazysim)
+      ensure_running "$CRAZYSIM_SERVICE"
+      dc exec -it "$CRAZYSIM_SERVICE" bash
+      ;;
+    pkg|package|controller|pmr|pmr_tp_final|package-humble)
+      ensure_running "$PACKAGE_SERVICE"
+      dc exec -it "$PACKAGE_SERVICE" bash
+      ;;
+    *)
+      echo "Unknown shell target: $1 (use sim or pkg)" >&2
+      return 2
+      ;;
+  esac
+}
+
+sim_cmd() {
+  printf '%s' 'cd /CrazySim/crazyflie-firmware && bash tools/crazyflie-simulation/simulator_files/gazebo/launch/sitl_multiagent_text.sh -f agents.txt'
+}
+
+swarm_cmd() {
+  local backend="${1:-$BACKEND}"
+  printf 'source /CrazySim/crazyswarm2_ws/install/setup.bash && ros2 launch crazyflie launch.py backend:=%q gui:=False' "$backend"
+}
+
+controllers_cmd() {
+  local extra_args=""
+  if [[ "$#" -gt 0 ]]; then
+    printf -v extra_args ' %q' "$@"
+  fi
+
+  printf 'source /root/ros2_ws/install/setup.bash && ros2 launch pmr_tp_final controller.launch.py%s' "$extra_args"
+}
+
+takeoff_cmd() {
+  printf '%s' 'source /CrazySim/crazyswarm2_ws/install/setup.bash && ros2 service call /all/takeoff crazyflie_interfaces/srv/Takeoff "{height: 0.5, duration: {sec: 2, nanosec: 0}}"'
+}
+
+sim_start() {
+  allow_xhost
+  exec_sim "$(sim_cmd)"
+}
+
+swarm_start() {
+  exec_sim "$(swarm_cmd "${1:-$BACKEND}")"
+}
+
+controllers_start() {
+  exec_pkg "$(controllers_cmd "$@")"
+}
+
+takeoff() {
+  exec_sim "$(takeoff_cmd)"
+}
+
+build_ws() {
+  exec_pkg 'cd /root/ros2_ws && source /opt/ros/humble/setup.bash && colcon build --symlink-install --packages-select pmr_tp_final'
+}
+
+all() {
+  local backend="${1:-$BACKEND}"
+
+  trap 'cleanup_all; exit 130' INT TERM
+  trap cleanup_all EXIT
+
+  up
+  exec_bg "$CRAZYSIM_SERVICE" /tmp/pmr_sim.log "$(sim_cmd)"
+  echo "Waiting ${STARTUP_DELAY}s for the simulator..."
+  sleep "$STARTUP_DELAY"
+  exec_bg "$CRAZYSIM_SERVICE" /tmp/pmr_crazyswarm.log "$(swarm_cmd "$backend")"
+  echo "Waiting ${STARTUP_DELAY}s for Crazyswarm2..."
+  sleep "$STARTUP_DELAY"
+  takeoff
+  echo "Waiting ${TAKEOFF_DELAY}s after takeoff..."
+  sleep "$TAKEOFF_DELAY"
+  controllers_start
+}
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+  help|-h|--help)
+    print_help
+    ;;
+  up|u)
+    up
+    ;;
+  rebuild|rb)
+    rebuild
+    ;;
+  down|d)
+    down
+    ;;
+  sim-start|ss)
+    sim_start
+    ;;
+  swarm-start|cs)
+    swarm_start "$@"
+    ;;
+  takeoff|to)
+    takeoff
+    ;;
+  controllers|ctrl)
+    controllers_start "$@"
+    ;;
+  all|a)
+    all "$@"
+    ;;
+  build-ws|bw)
+    build_ws
+    ;;
+  shell|sh)
+    shell "$@"
+    ;;
+  *)
+    echo "Unknown command: $cmd" >&2
+    print_help
+    exit 2
+    ;;
+esac
