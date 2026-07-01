@@ -9,6 +9,7 @@ PACKAGE_SERVICE="${PACKAGE_SERVICE:-package-humble}"
 BACKEND="${BACKEND:-cflib}"
 STARTUP_DELAY="${STARTUP_DELAY:-5}"
 TAKEOFF_DELAY="${TAKEOFF_DELAY:-3}"
+TAKEOFF_HEIGHT="${TAKEOFF_HEIGHT:-1.0}"
 
 DOCKER_COMPOSE=(docker compose -f "$COMPOSE_FILE" --profile "$COMPOSE_PROFILE")
 BG_PIDS=()
@@ -31,7 +32,7 @@ Launches:
   sim-start | ss          Start CrazySim SITL/Gazebo firmware
   swarm-start | cs [backend]
                           Start Crazyswarm2 (default backend: cflib)
-  takeoff | to            Send takeoff command to all Crazyflies
+  takeoff | to [height]   Send takeoff command to all Crazyflies
   controllers | ctrl [ros2 launch args...]
                           Start pmr_tp_final controller.launch.py
   all | a [backend]       Start containers, sim + Crazyswarm2 in background,
@@ -44,13 +45,14 @@ Other:
 
 Environment overrides:
   COMPOSE_FILE, COMPOSE_PROFILE, CRAZYSIM_SERVICE, PACKAGE_SERVICE,
-  BACKEND, STARTUP_DELAY, TAKEOFF_DELAY
+  BACKEND, STARTUP_DELAY, TAKEOFF_DELAY, TAKEOFF_HEIGHT
 
 Examples:
   ./pmr up
   ./pmr sim-start
   ./pmr swarm-start cflib
   ./pmr controllers total_robots:=4
+  ./pmr takeoff 1.2
   ./pmr all
   ./pmr shell pkg
   ./pmr down
@@ -169,7 +171,8 @@ controllers_cmd() {
 }
 
 takeoff_cmd() {
-  printf '%s' 'source /CrazySim/crazyswarm2_ws/install/setup.bash && ros2 service call /all/takeoff crazyflie_interfaces/srv/Takeoff "{height: 0.5, duration: {sec: 2, nanosec: 0}}"'
+  local height="${1:-$TAKEOFF_HEIGHT}"
+  printf 'source /CrazySim/crazyswarm2_ws/install/setup.bash && ros2 service call /all/takeoff crazyflie_interfaces/srv/Takeoff "{height: %s, duration: {sec: 2, nanosec: 0}}"' "$height"
 }
 
 sim_start() {
@@ -186,7 +189,7 @@ controllers_start() {
 }
 
 takeoff() {
-  exec_sim "$(takeoff_cmd)"
+  exec_sim "$(takeoff_cmd "${1:-$TAKEOFF_HEIGHT}")"
 }
 
 build_ws() {
@@ -206,7 +209,7 @@ all() {
   exec_bg "$CRAZYSIM_SERVICE" /tmp/pmr_crazyswarm.log "$(swarm_cmd "$backend")"
   echo "Waiting ${STARTUP_DELAY}s for Crazyswarm2..."
   sleep "$STARTUP_DELAY"
-  takeoff
+  takeoff "$TAKEOFF_HEIGHT"
   echo "Waiting ${TAKEOFF_DELAY}s after takeoff..."
   sleep "$TAKEOFF_DELAY"
   controllers_start
@@ -235,7 +238,7 @@ case "$cmd" in
     swarm_start "$@"
     ;;
   takeoff|to)
-    takeoff
+    takeoff "$@"
     ;;
   controllers|ctrl)
     controllers_start "$@"

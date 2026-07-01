@@ -8,6 +8,8 @@ from crazyflie_interfaces.msg import LogDataGeneric
 from rclpy.node import Node
 
 from pmr_tp_final.commander import AccelerationCommander
+from pmr_tp_final.constraints import BaseConstraint, SafetyCbfConstraint
+from pmr_tp_final.optimizer import AccelOptimizer, SolveStatus
 from pmr_tp_final.robot_model import Robot
 
 
@@ -30,6 +32,8 @@ class CbfAgentController(Node):
         self.declare_parameter("max_velocity", 1.0)
         self.declare_parameter("max_acceleration", 1.0)
         self.declare_parameter("robot_radius", 0.15)
+        self.declare_parameter("safety_margin", 0.1)
+        self.declare_parameter("safety_alpha", 1.0)
 
         self._robot_id = self.get_parameter("robot_id").value
         self._robot_prefix = self.get_parameter("robot_prefix").value
@@ -39,6 +43,17 @@ class CbfAgentController(Node):
         self._max_acceleration = self.get_parameter("max_acceleration").value
         self._robot_radius = self.get_parameter("robot_radius").value
         self._neighbor_names = self._make_neighbor_names()
+
+        self._constraints: List[BaseConstraint] = [
+            SafetyCbfConstraint(
+                safety_margin=float(self.get_parameter("safety_margin").value),
+                max_acceleration=float(self._max_acceleration),
+                alpha=float(self.get_parameter("safety_alpha").value),
+            )
+        ]
+
+        self._optimizer = AccelOptimizer()
+        self._optimizer.initialize_model(float(self._max_acceleration))
 
         self._states: Dict[str, Robot] = {}
         self._state_subscriptions = [
@@ -116,10 +131,9 @@ class CbfAgentController(Node):
     def _control_step(self) -> None:
         """Run one local control step for this Crazyflie.
 
-        Later this should:
-        1. Build CBF constraints from ego and neighbor states.
-        2. Solve this agent's QP using ``optimizer.py``.
-        3. Send the resulting acceleration through ``AccelerationCommander``.
+        This builds constraint terms from the active CBF constraints, solves the
+        local acceleration QP, and sends the result through
+        ``AccelerationCommander``.
         """
         ego = self._states.get(self._robot_name)
         if ego is None:
@@ -140,24 +154,42 @@ class CbfAgentController(Node):
         ego: Robot,
         neighbors: Dict[str, Robot],
     ) -> np.ndarray:
-        """Placeholder PD position tracker for simulation bring-up.
-
-        This intentionally avoids CBF/QP logic while validating that state
-        logs are received and ``cmd_full_state`` commands move each drone.
-        """
+        """Compute the QP-filtered acceleration command."""
 
         position_refs = {
-            0: np.array([0.5, -0.5]),
-            1: np.array([1.5, -0.5]),
-            2: np.array([1.5, 0.5]),
-            3: np.array([0.5, 0.5]),
+            0: np.array([0.5, 0.5]),
+            1: np.array([-0.5, 0.5]),
+            2: np.array([-0.5, -0.5]),
+            3: np.array([0.5, -0.5]),
         }
         position_ref = position_refs.get(self._robot_id, np.zeros(2))
         kp = 1.0
         kd = 1.4
 
-        a_des = kp * (position_ref - ego.position) - kd * ego.velocity
-        return self._clip_norm(a_des, self._max_acceleration)
+        a_ref = kp * (position_ref - ego.position) - kd * ego.velocity
+        a_ref = self._clip_norm(a_ref, self._max_acceleration)
+
+        self._optimizer.reset()
+        self._optimizer.set_objective(a_ref)
+
+        neighbor_states = list(neighbors.values())
+        for constraint in self._constraints:
+            for term in constraint.compute_terms(ego, neighbor_states):
+                self._optimizer.add_linear_constraint(
+                    term.a_row,
+                    term.b,
+                    slack_label=term.slack_label,
+                    slack_weight=term.slack_weight,
+                )
+
+        status, ax, ay = self._optimizer.solve()
+        if status != SolveStatus.OPTIMAL:
+            self.get_logger().warn(
+                f"Acceleration QP failed with status {status.value}; using reference acceleration."
+            )
+            return a_ref
+
+        return np.array([ax, ay], dtype=float)
 
     @staticmethod
     def _clip_norm(vector: np.ndarray, max_norm: float) -> np.ndarray:

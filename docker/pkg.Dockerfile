@@ -22,8 +22,9 @@ WORKDIR ${PMR_WS}
 
 COPY package.xml ${PMR_WS}/src/pmr_tp_final/
 
-# Install rosdep-resolvable dependencies. Gurobi is optional until the QP path
-# is active, so skip it for this lightweight controller image.
+# Install rosdep-resolvable dependencies. ``python3-gurobipy`` is not available
+# from the ROS/Ubuntu apt sources used here, so rosdep skips it and we install
+# the official Python wheel below.
 RUN rosdep init || true \
  && rosdep update \
  && source "/opt/ros/${ROS_DISTRO}/setup.bash" \
@@ -31,6 +32,11 @@ RUN rosdep init || true \
  && rosdep install --from-paths src --ignore-src -r -y --rosdistro "${ROS_DISTRO}" \
     --skip-keys python3-gurobipy \
  && rm -rf /var/lib/apt/lists/*
+
+# Gurobi's pip package includes the restricted/free license path, which is
+# enough for this controller's tiny QPs without requiring a separate license
+# file. Pin below the next major to avoid unexpected wheel/API changes.
+RUN python3 -m pip install --no-cache-dir 'gurobipy>=12,<13'
 
 # Copy and build the package.
 COPY . ${PMR_WS}/src/pmr_tp_final
