@@ -8,7 +8,11 @@ from crazyflie_interfaces.msg import LogDataGeneric
 from rclpy.node import Node
 
 from pmr_tp_final.commander import AccelerationCommander
-from pmr_tp_final.constraints import BaseConstraint, SafetyCbfConstraint
+from pmr_tp_final.constraints import (
+    BaseConstraint,
+    SafetyCbfConstraint,
+    VelocityObstacleCbfConstraint,
+)
 from pmr_tp_final.optimizer import AccelOptimizer, SolveStatus
 from pmr_tp_final.robot_model import Robot
 
@@ -34,6 +38,8 @@ class CbfAgentController(Node):
         self.declare_parameter("robot_radius", 0.15)
         self.declare_parameter("safety_margin", 0.1)
         self.declare_parameter("safety_alpha", 1.0)
+        self.declare_parameter("vo_alpha", 1.0)
+        self.declare_parameter("vo_slack_weight_gain", 1.0)
 
         self._robot_id = self.get_parameter("robot_id").value
         self._robot_prefix = self.get_parameter("robot_prefix").value
@@ -49,7 +55,13 @@ class CbfAgentController(Node):
                 safety_margin=float(self.get_parameter("safety_margin").value),
                 max_acceleration=float(self._max_acceleration),
                 alpha=float(self.get_parameter("safety_alpha").value),
-            )
+            ),
+            VelocityObstacleCbfConstraint(
+                alpha=float(self.get_parameter("vo_alpha").value),
+                slack_weight_gain=float(
+                    self.get_parameter("vo_slack_weight_gain").value
+                ),
+            ),
         ]
 
         self._optimizer = AccelOptimizer()
