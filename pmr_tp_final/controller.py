@@ -1,6 +1,5 @@
 """Pseudo-decentralized ROS 2 node skeleton for Crazyflie CBF/QP control."""
 
-from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 
 import numpy as np
@@ -9,14 +8,7 @@ from crazyflie_interfaces.msg import LogDataGeneric
 from rclpy.node import Node
 
 from pmr_tp_final.commander import AccelerationCommander
-
-
-@dataclass
-class AgentState:
-    """Planar state used by each local CBF controller."""
-
-    position: np.ndarray
-    velocity: np.ndarray
+from pmr_tp_final.robot_model import Robot
 
 
 class CbfAgentController(Node):
@@ -37,6 +29,7 @@ class CbfAgentController(Node):
         self.declare_parameter("fixed_z", 1.0)
         self.declare_parameter("max_velocity", 1.0)
         self.declare_parameter("max_acceleration", 1.0)
+        self.declare_parameter("robot_radius", 0.15)
 
         self._robot_id = self.get_parameter("robot_id").value
         self._robot_prefix = self.get_parameter("robot_prefix").value
@@ -44,9 +37,10 @@ class CbfAgentController(Node):
         self._control_period = self.get_parameter("control_period").value
         self._robot_name = self._make_robot_name(self._robot_id)
         self._max_acceleration = self.get_parameter("max_acceleration").value
+        self._robot_radius = self.get_parameter("robot_radius").value
         self._neighbor_names = self._make_neighbor_names()
 
-        self._states: Dict[str, AgentState] = {}
+        self._states: Dict[str, Robot] = {}
         self._state_subscriptions = [
             self.create_subscription(
                 LogDataGeneric,
@@ -105,9 +99,18 @@ class CbfAgentController(Node):
             )
             return
 
-        self._states[agent_name] = AgentState(
-            position=np.array([msg.values[0], msg.values[1]], dtype=float),
-            velocity=np.array([msg.values[3], msg.values[4]], dtype=float),
+        robot = self._states.get(agent_name)
+        if robot is None:
+            robot = Robot(name=agent_name, radius=float(self._robot_radius))
+            self._states[agent_name] = robot
+
+        robot.update_state(
+            x=msg.values[0],
+            y=msg.values[1],
+            z=msg.values[2],
+            vx=msg.values[3],
+            vy=msg.values[4],
+            vz=msg.values[5],
         )
 
     def _control_step(self) -> None:
@@ -134,8 +137,8 @@ class CbfAgentController(Node):
 
     def _compute_acceleration(
         self,
-        ego: AgentState,
-        neighbors: Dict[str, AgentState],
+        ego: Robot,
+        neighbors: Dict[str, Robot],
     ) -> np.ndarray:
         """Placeholder PD position tracker for simulation bring-up.
 
