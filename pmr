@@ -41,6 +41,8 @@ Launches:
                           Ctrl-C or controller exit stops the compose stack.
 
 Other:
+  circle-config | cc <n> <r>
+                          Overwrite config files with n agents on radius r circle
   build-ws | bw           Rebuild pmr_tp_final inside package-humble
   help | -h | --help      Show this help
 
@@ -53,6 +55,8 @@ Examples:
   ./pmr sim-start
   ./pmr swarm-start cflib
   ./pmr controllers total_robots:=4
+  ./pmr circle-config 6 1.5
+  ./pmr all total_robots:=6 scenario_radius:=1.5
   ./pmr takeoff 1.2
   ./pmr all
   ./pmr shell pkg
@@ -197,6 +201,75 @@ build_ws() {
   exec_pkg 'cd /root/ros2_ws && source /opt/ros/humble/setup.bash && colcon build --symlink-install --packages-select pmr_tp_final'
 }
 
+circle_config() {
+  if [[ "$#" -ne 2 ]]; then
+    echo "Usage: ./pmr circle-config <num_robots> <radius>" >&2
+    return 2
+  fi
+
+  python3 - "$ROOT_DIR" "$1" "$2" <<'PY'
+import math
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+try:
+    num_robots = int(sys.argv[2])
+    radius = float(sys.argv[3])
+except ValueError as exc:
+    raise SystemExit(f"Invalid circle config argument: {exc}")
+
+if num_robots <= 0:
+    raise SystemExit("num_robots must be positive")
+if radius <= 0.0:
+    raise SystemExit("radius must be positive")
+
+crazyflies_path = root / "config" / "crazyflies.yaml"
+agents_path = root / "config" / "agents.txt"
+
+existing = crazyflies_path.read_text()
+marker = "robot_types:"
+if marker not in existing:
+    raise SystemExit(f"Could not find {marker!r} section in {crazyflies_path}")
+tail = existing[existing.index(marker):]
+
+positions = []
+for idx in range(num_robots):
+    theta = 2.0 * math.pi * idx / num_robots
+    x = radius * math.cos(theta)
+    y = radius * math.sin(theta)
+    positions.append((x, y))
+
+def fmt(value: float) -> str:
+    if abs(value) < 5e-10:
+        value = 0.0
+    return f"{value:.7f}".rstrip("0").rstrip(".")
+
+robots = ["# named list of all robots", "fileversion: 3", "", "robots:"]
+for idx, (x, y) in enumerate(positions):
+    robots.extend(
+        [
+            f"  cf_{idx}:",
+            "    enabled: true",
+            f"    uri: udp://127.0.0.1:{19850 + idx}",
+            f"    initial_position: [{fmt(x)}, {fmt(y)}, 0.0]",
+            "    type: cf_sim",
+            "",
+        ]
+    )
+
+crazyflies_path.write_text("\n".join(robots) + "\n" + tail)
+agents_path.write_text("\n".join(f"{fmt(x)}, {fmt(y)}" for x, y in positions) + "\n")
+
+print(f"Wrote {crazyflies_path}")
+print(f"Wrote {agents_path}")
+print(
+    "Launch with: "
+    f"./pmr all total_robots:={num_robots} scenario_radius:={fmt(radius)}"
+)
+PY
+}
+
 all() {
   trap 'cleanup_all; exit 130' INT TERM
   trap cleanup_all EXIT
@@ -244,6 +317,9 @@ case "$cmd" in
     ;;
   all|a)
     all "$@"
+    ;;
+  circle-config|cc)
+    circle_config "$@"
     ;;
   build-ws|bw)
     build_ws

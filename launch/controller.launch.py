@@ -9,6 +9,7 @@ from launch_ros.actions import Node
 def _controller_nodes(context):
     total_robots = int(LaunchConfiguration("total_robots").perform(context))
     robot_prefix = LaunchConfiguration("robot_prefix").perform(context)
+    scenario_radius = float(LaunchConfiguration("scenario_radius").perform(context))
 
     return [
         Node(
@@ -21,6 +22,7 @@ def _controller_nodes(context):
                     "robot_id": robot_id,
                     "robot_prefix": robot_prefix,
                     "total_robots": total_robots,
+                    "scenario_radius": scenario_radius,
                 }
             ],
         )
@@ -40,6 +42,11 @@ def generate_launch_description():
                 "robot_prefix",
                 default_value="cf_",
                 description="Prefix used to build robot names, e.g. cf_0.",
+            ),
+            DeclareLaunchArgument(
+                "scenario_radius",
+                default_value="1.0",
+                description="Radius of the opposite-circle goal scenario.",
             ),
             OpaqueFunction(function=_controller_nodes),
         ]

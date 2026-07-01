@@ -39,8 +39,9 @@ class CbfAgentController(Node):
         self.declare_parameter("robot_radius", 0.1)
         self.declare_parameter("safety_margin", 0.1)
         self.declare_parameter("safety_alpha", 1.0)
-        self.declare_parameter("vo_alpha", 1.0)
+        self.declare_parameter("vo_alpha", 0.5)
         self.declare_parameter("vo_slack_weight_gain", 5.0)
+        self.declare_parameter("scenario_radius", 1.0)
 
         self._robot_id = self.get_parameter("robot_id").value
         self._robot_prefix = self.get_parameter("robot_prefix").value
@@ -49,6 +50,7 @@ class CbfAgentController(Node):
         self._robot_name = self._make_robot_name(self._robot_id)
         self._max_acceleration = self.get_parameter("max_acceleration").value
         self._robot_radius = self.get_parameter("robot_radius").value
+        self._scenario_radius = float(self.get_parameter("scenario_radius").value)
         self._neighbor_names = self._make_neighbor_names()
 
         self._constraints: List[BaseConstraint] = [
@@ -169,13 +171,7 @@ class CbfAgentController(Node):
     ) -> np.ndarray:
         """Compute the QP-filtered acceleration command."""
 
-        position_refs = {
-            0: np.array([-1.0, 0.0]),
-            1: np.array([0.0, -1.0]),
-            2: np.array([1.0, 0.0]),
-            3: np.array([0.0, 1.0]),
-        }
-        position_ref = position_refs.get(self._robot_id, np.zeros(2))
+        position_ref = self._opposite_circle_goal()
         kp = 1.0
         kd = 1.4
 
@@ -203,6 +199,18 @@ class CbfAgentController(Node):
             return self._clip_norm(-2.0 * ego.velocity, self._max_acceleration)
 
         return np.array([ax, ay], dtype=float)
+
+    def _opposite_circle_goal(self) -> np.ndarray:
+        """Return this robot's opposite point on the scenario circle."""
+        if self._total_robots <= 0:
+            return np.zeros(2)
+
+        theta = 2.0 * np.pi * self._robot_id / self._total_robots
+        goal_theta = theta + np.pi
+        return self._scenario_radius * np.array(
+            [np.cos(goal_theta), np.sin(goal_theta)],
+            dtype=float,
+        )
 
     @staticmethod
     def _clip_norm(vector: np.ndarray, max_norm: float) -> np.ndarray:
