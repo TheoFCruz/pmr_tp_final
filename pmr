@@ -8,6 +8,7 @@ CRAZYSIM_SERVICE="${CRAZYSIM_SERVICE:-crazysim}"
 PACKAGE_SERVICE="${PACKAGE_SERVICE:-package-humble}"
 BACKEND="${BACKEND:-cflib}"
 STARTUP_DELAY="${STARTUP_DELAY:-5}"
+SIM_STARTUP_DELAY="${SIM_STARTUP_DELAY:-10}"
 TAKEOFF_DELAY="${TAKEOFF_DELAY:-3}"
 TAKEOFF_HEIGHT="${TAKEOFF_HEIGHT:-1.0}"
 
@@ -35,7 +36,7 @@ Launches:
   takeoff | to [height]   Send takeoff command to all Crazyflies
   controllers | ctrl [ros2 launch args...]
                           Start pmr_tp_final controller.launch.py
-  all | a [backend]       Start containers, sim + Crazyswarm2 in background,
+  all | a [launch args...] Start containers, sim + Crazyswarm2 in background,
                           take off, then run controllers in the foreground.
                           Ctrl-C or controller exit stops the compose stack.
 
@@ -45,7 +46,7 @@ Other:
 
 Environment overrides:
   COMPOSE_FILE, COMPOSE_PROFILE, CRAZYSIM_SERVICE, PACKAGE_SERVICE,
-  BACKEND, STARTUP_DELAY, TAKEOFF_DELAY, TAKEOFF_HEIGHT
+  BACKEND, STARTUP_DELAY, SIM_STARTUP_DELAY, TAKEOFF_DELAY, TAKEOFF_HEIGHT
 
 Examples:
   ./pmr up
@@ -197,22 +198,20 @@ build_ws() {
 }
 
 all() {
-  local backend="${1:-$BACKEND}"
-
   trap 'cleanup_all; exit 130' INT TERM
   trap cleanup_all EXIT
 
   up
   exec_bg "$CRAZYSIM_SERVICE" /tmp/pmr_sim.log "$(sim_cmd)"
-  echo "Waiting ${STARTUP_DELAY}s for the simulator..."
-  sleep "$STARTUP_DELAY"
-  exec_bg "$CRAZYSIM_SERVICE" /tmp/pmr_crazyswarm.log "$(swarm_cmd "$backend")"
+  echo "Waiting ${SIM_STARTUP_DELAY}s for the simulator..."
+  sleep "$SIM_STARTUP_DELAY"
+  exec_bg "$CRAZYSIM_SERVICE" /tmp/pmr_crazyswarm.log "$(swarm_cmd "$BACKEND")"
   echo "Waiting ${STARTUP_DELAY}s for Crazyswarm2..."
   sleep "$STARTUP_DELAY"
   takeoff "$TAKEOFF_HEIGHT"
   echo "Waiting ${TAKEOFF_DELAY}s after takeoff..."
   sleep "$TAKEOFF_DELAY"
-  controllers_start
+  controllers_start "$@"
 }
 
 cmd="${1:-help}"

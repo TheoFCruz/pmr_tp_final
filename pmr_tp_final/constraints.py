@@ -50,10 +50,16 @@ class BaseConstraint(ABC):
 
 
 class SafetyCbfConstraint(BaseConstraint):
-    """Hard pairwise safety-CBF constraint.
+    """Hard pairwise high-order distance safety-CBF constraint.
 
-    The neighbor is modeled as keeping constant velocity over the current QP
-    step, so only the ego planar acceleration appears in each linear row.
+    The barrier is based directly on squared inter-agent distance:
+
+    ``h = ||p_j - p_i||² - (r_i + r_j + safety_margin)²``.
+
+    Since the controller input is acceleration, this uses the second-order CBF
+    condition ``h_ddot + 2 alpha h_dot + alpha² h >= 0``. The neighbor is
+    modeled as keeping constant velocity over the current QP step, so only the
+    ego planar acceleration appears in each linear row.
     """
 
     def __init__(
@@ -101,11 +107,96 @@ class SafetyCbfConstraint(BaseConstraint):
         """Compute one pairwise term ``a_row @ a_i >= b`` if needed."""
         p_ij = neighbor.position - ego.position
         v_ij = neighbor.velocity - ego.velocity
-        distance = float(np.linalg.norm(p_ij))
+        distance_sq = float(np.dot(p_ij, p_ij))
+        distance = float(np.sqrt(distance_sq))
 
         if distance < self.min_distance:
             logger.warning(
                 "Skipping safety CBF for %s/%s: relative distance is too small.",
+                ego.name or "ego",
+                neighbor.name or "neighbor",
+            )
+            return None
+
+        safe_distance = ego.radius + neighbor.radius + self.safety_margin
+        h = distance_sq - safe_distance**2
+        h_dot = 2.0 * float(np.dot(p_ij, v_ij))
+
+        # h_ddot = 2 ||v_ij||² - 2 p_ijᵀ a_i, assuming neighbor acceleration is
+        # zero. Enforce h_ddot + 2 alpha h_dot + alpha² h >= 0 and convert to
+        # optimizer form a_row @ a_i >= b.
+        relative_speed_sq = float(np.dot(v_ij, v_ij))
+        a_row = -2.0 * p_ij
+        b = (
+            -2.0 * relative_speed_sq
+            - 2.0 * self.alpha * h_dot
+            - self.alpha**2 * h
+        )
+
+        return ConstraintTerm(a_row=a_row, b=float(b))
+
+
+class VelocitySafetyCbfConstraint(BaseConstraint):
+    """Hard braking-distance safety-CBF constraint kept for comparison.
+
+    This is the previous velocity-based safety barrier:
+
+    ``h = d_ij - safety_margin - min(0, v_ijᵀ p_hat)² / (2 a_max)``.
+
+    It is not used by the current controller, which instantiates
+    ``SafetyCbfConstraint`` above instead.
+    """
+
+    def __init__(
+        self,
+        safety_margin: float,
+        max_acceleration: float,
+        alpha: float,
+        min_distance: float = 1e-6,
+    ) -> None:
+        if max_acceleration <= 0.0:
+            raise ValueError("max_acceleration must be positive.")
+        if min_distance <= 0.0:
+            raise ValueError("min_distance must be positive.")
+
+        self.safety_margin = float(safety_margin)
+        self.max_acceleration = float(max_acceleration)
+        self.alpha = float(alpha)
+        self.min_distance = float(min_distance)
+
+    @property
+    def requires_slack(self) -> bool:
+        """Safety constraints are hard constraints and never use slack."""
+        return False
+
+    def compute_terms(
+        self,
+        ego: Robot,
+        neighbors: List[Robot],
+    ) -> List[ConstraintTerm]:
+        """Return hard braking-distance CBF terms for all neighbors."""
+        terms: List[ConstraintTerm] = []
+
+        for neighbor in neighbors:
+            term = self._compute_pair_term(ego, neighbor)
+            if term is not None:
+                terms.append(term)
+
+        return terms
+
+    def _compute_pair_term(
+        self,
+        ego: Robot,
+        neighbor: Robot,
+    ) -> Optional[ConstraintTerm]:
+        """Compute one pairwise term ``a_row @ a_i >= b`` if needed."""
+        p_ij = neighbor.position - ego.position
+        v_ij = neighbor.velocity - ego.velocity
+        distance = float(np.linalg.norm(p_ij))
+
+        if distance < self.min_distance:
+            logger.warning(
+                "Skipping velocity safety CBF for %s/%s: relative distance is too small.",
                 ego.name or "ego",
                 neighbor.name or "neighbor",
             )
@@ -164,6 +255,7 @@ class VelocityObstacleCbfConstraint(BaseConstraint):
         min_distance: float = 1e-6,
         min_relative_speed: float = 1e-6,
         min_time_to_collision: float = 1e-3,
+        max_time_to_collision: float = 5.0,
     ) -> None:
         if min_distance <= 0.0:
             raise ValueError("min_distance must be positive.")
@@ -171,12 +263,15 @@ class VelocityObstacleCbfConstraint(BaseConstraint):
             raise ValueError("min_relative_speed must be positive.")
         if min_time_to_collision <= 0.0:
             raise ValueError("min_time_to_collision must be positive.")
+        if max_time_to_collision <= min_time_to_collision:
+            raise ValueError("max_time_to_collision must exceed min_time_to_collision.")
 
         self.alpha = float(alpha)
         self.slack_weight_gain = float(slack_weight_gain)
         self.min_distance = float(min_distance)
         self.min_relative_speed = float(min_relative_speed)
         self.min_time_to_collision = float(min_time_to_collision)
+        self.max_time_to_collision = float(max_time_to_collision)
 
     @property
     def requires_slack(self) -> bool:
@@ -188,7 +283,7 @@ class VelocityObstacleCbfConstraint(BaseConstraint):
         ego: Robot,
         neighbors: List[Robot],
     ) -> List[ConstraintTerm]:
-        """Return relaxed VO-CBF terms for neighbors on collision courses."""
+        """Return relaxed VO-CBF terms for approaching neighbors."""
         terms: List[ConstraintTerm] = []
 
         for idx, neighbor in enumerate(neighbors):
@@ -222,13 +317,11 @@ class VelocityObstacleCbfConstraint(BaseConstraint):
         if relative_speed < self.min_relative_speed:
             return None
 
-        time_to_collision = self._time_to_collision(
-            p_ij,
-            v_ij,
-            combined_radius,
-        )
-        if time_to_collision is None:
+        p_dot_v = float(np.dot(p_ij, v_ij))
+        if p_dot_v >= 0.0:
             return None
+
+        time_weight = self._time_weight(p_ij, v_ij, combined_radius)
 
         # Paper notation for the simplified Eq. 23 term:
         #
@@ -241,7 +334,6 @@ class VelocityObstacleCbfConstraint(BaseConstraint):
         l_norm = float(np.sqrt(distance**2 - combined_radius**2))
         v_norm = relative_speed
         v_hat = v_ij / v_norm
-        p_dot_v = float(np.dot(p_ij, v_ij))
 
         p_dot_l_hat = l_norm
         p_dot_l_hat_dot_plus_v_dot_l_hat = p_dot_v / l_norm
@@ -262,7 +354,7 @@ class VelocityObstacleCbfConstraint(BaseConstraint):
         b = -paper_constant_term - self.alpha * h_vo
 
         slack_weight = self.slack_weight_gain / max(
-            time_to_collision,
+            time_weight,
             self.min_time_to_collision,
         )
 
@@ -271,6 +363,34 @@ class VelocityObstacleCbfConstraint(BaseConstraint):
             b=float(b),
             slack_label=slack_label,
             slack_weight=float(slack_weight),
+        )
+
+    def _time_weight(
+        self,
+        p_ij: np.ndarray,
+        v_ij: np.ndarray,
+        combined_radius: float,
+    ) -> float:
+        """Return a finite time scale for VO slack weighting.
+
+        If the current relative velocity intersects the collision disk, use the
+        true first positive collision time. Otherwise use the time of closest
+        approach, capped by ``max_time_to_collision``. This keeps the relaxed VO
+        term active earlier than the exact collision-cone crossing.
+        """
+        time_to_collision = self._time_to_collision(
+            p_ij,
+            v_ij,
+            combined_radius,
+        )
+        if time_to_collision is not None:
+            return min(time_to_collision, self.max_time_to_collision)
+
+        relative_speed_sq = float(np.dot(v_ij, v_ij))
+        time_to_closest_approach = -float(np.dot(p_ij, v_ij)) / relative_speed_sq
+        return min(
+            max(time_to_closest_approach, self.min_time_to_collision),
+            self.max_time_to_collision,
         )
 
     def _time_to_collision(

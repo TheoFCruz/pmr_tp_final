@@ -11,6 +11,7 @@ from pmr_tp_final.commander import AccelerationCommander
 from pmr_tp_final.constraints import (
     BaseConstraint,
     SafetyCbfConstraint,
+    VelocitySafetyCbfConstraint,
     VelocityObstacleCbfConstraint,
 )
 from pmr_tp_final.optimizer import AccelOptimizer, SolveStatus
@@ -33,13 +34,13 @@ class CbfAgentController(Node):
         self.declare_parameter("total_robots", total_robots)
         self.declare_parameter("control_period", 0.1)
         self.declare_parameter("fixed_z", 1.0)
-        self.declare_parameter("max_velocity", 1.0)
-        self.declare_parameter("max_acceleration", 1.0)
-        self.declare_parameter("robot_radius", 0.15)
+        self.declare_parameter("max_velocity", 0.5)
+        self.declare_parameter("max_acceleration", 1.5)
+        self.declare_parameter("robot_radius", 0.1)
         self.declare_parameter("safety_margin", 0.1)
         self.declare_parameter("safety_alpha", 1.0)
         self.declare_parameter("vo_alpha", 1.0)
-        self.declare_parameter("vo_slack_weight_gain", 1.0)
+        self.declare_parameter("vo_slack_weight_gain", 5.0)
 
         self._robot_id = self.get_parameter("robot_id").value
         self._robot_prefix = self.get_parameter("robot_prefix").value
@@ -169,10 +170,10 @@ class CbfAgentController(Node):
         """Compute the QP-filtered acceleration command."""
 
         position_refs = {
-            0: np.array([0.5, 0.5]),
-            1: np.array([-0.5, 0.5]),
-            2: np.array([-0.5, -0.5]),
-            3: np.array([0.5, -0.5]),
+            0: np.array([-1.0, 0.0]),
+            1: np.array([0.0, -1.0]),
+            2: np.array([1.0, 0.0]),
+            3: np.array([0.0, 1.0]),
         }
         position_ref = position_refs.get(self._robot_id, np.zeros(2))
         kp = 1.0
@@ -197,9 +198,9 @@ class CbfAgentController(Node):
         status, ax, ay = self._optimizer.solve()
         if status != SolveStatus.OPTIMAL:
             self.get_logger().warn(
-                f"Acceleration QP failed with status {status.value}; using reference acceleration."
+                f"Acceleration QP failed with status {status.value}; braking."
             )
-            return a_ref
+            return self._clip_norm(-2.0 * ego.velocity, self._max_acceleration)
 
         return np.array([ax, ay], dtype=float)
 
