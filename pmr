@@ -246,7 +246,7 @@ bag_play_cmd() {
     extra_args+="$quoted_arg"
   done
 
-  printf 'source /root/ros2_ws/install/setup.bash && ros2 bag play --clock %q%s' "$bag_path" "$extra_args"
+  printf 'source /root/ros2_ws/install/setup.bash && ros2 bag play %q%s --clock' "$bag_path" "$extra_args"
 }
 
 sim_start() {
