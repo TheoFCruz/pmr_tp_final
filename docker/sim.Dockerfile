@@ -6,13 +6,15 @@ ENV ROS_DISTRO=humble
 ENV CRAZYSIM_HOME=/CrazySim
 
 # Newer Intel/AMD iGPUs may need a newer Mesa userspace than Ubuntu Jammy ships.
+# kisak-mesa "fresh" no longer publishes Jammy packages, so use the stable PPA.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     software-properties-common \
- && add-apt-repository -y ppa:kisak/kisak-mesa \
+ && add-apt-repository -y ppa:kisak/turtle \
  && apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-dri \
     libglx-mesa0 \
     libegl-mesa0 \
+    libgbm1 \
     mesa-vulkan-drivers \
     mesa-utils \
  && rm -rf /var/lib/apt/lists/*

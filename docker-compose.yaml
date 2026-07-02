@@ -50,7 +50,7 @@ services:
       - ./config/agents.txt:/CrazySim/crazyflie-firmware/tools/crazyflie-simulation/simulator_files/gazebo/launch/drone_spawn_list/agents.txt
     devices:
       - /dev/dri:/dev/dri
-    gpus: all  # uncomment for nvidia gpus
+    # gpus: all  # uncomment for nvidia gpus
     command: bash
     tty: true            # Keeps the container running
     stdin_open: true     # Allows you to interact with the shell

@@ -34,13 +34,13 @@ class CbfAgentController(Node):
         self.declare_parameter("total_robots", total_robots)
         self.declare_parameter("control_period", 0.1)
         self.declare_parameter("fixed_z", 1.0)
-        self.declare_parameter("max_velocity", 0.5)
-        self.declare_parameter("max_acceleration", 1.5)
+        self.declare_parameter("max_velocity", 1.0)
+        self.declare_parameter("max_acceleration", 1.0)
         self.declare_parameter("robot_radius", 0.1)
         self.declare_parameter("safety_margin", 0.1)
-        self.declare_parameter("safety_alpha", 1.0)
-        self.declare_parameter("vo_alpha", 0.5)
-        self.declare_parameter("vo_slack_weight_gain", 5.0)
+        self.declare_parameter("safety_alpha", 10.0)
+        self.declare_parameter("vo_alpha", 10.0)
+        self.declare_parameter("vo_slack_weight_gain", 1000.0)
         self.declare_parameter("scenario_radius", 1.0)
 
         self._robot_id = self.get_parameter("robot_id").value
