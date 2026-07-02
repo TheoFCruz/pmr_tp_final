@@ -1,7 +1,7 @@
 """Launch one controller per Crazyflie."""
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction, TimerAction
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -47,7 +47,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "scenario_radius",
-                default_value="1.0",
+                default_value="1.5",
                 description="Radius of the opposite-circle goal scenario.",
             ),
             DeclareLaunchArgument(
@@ -55,9 +55,6 @@ def generate_launch_description():
                 default_value="full",
                 description="Constraint mode: full or vo_only.",
             ),
-            TimerAction(
-                period=2.0,
-                actions=[OpaqueFunction(function=_controller_nodes)],
-            ),
+            OpaqueFunction(function=_controller_nodes),
         ]
     )

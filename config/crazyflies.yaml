@@ -5,25 +5,25 @@ robots:
   cf_0:
     enabled: true
     uri: udp://127.0.0.1:19850
-    initial_position: [1, 0, 0.0]
+    initial_position: [1.5, 0, 0.0]
     type: cf_sim
 
   cf_1:
     enabled: true
     uri: udp://127.0.0.1:19851
-    initial_position: [0, 1, 0.0]
+    initial_position: [0, 1.5, 0.0]
     type: cf_sim
 
   cf_2:
     enabled: true
     uri: udp://127.0.0.1:19852
-    initial_position: [-1, 0, 0.0]
+    initial_position: [-1.5, 0, 0.0]
     type: cf_sim
 
   cf_3:
     enabled: true
     uri: udp://127.0.0.1:19853
-    initial_position: [0, -1, 0.0]
+    initial_position: [0, -1.5, 0.0]
     type: cf_sim
 
 robot_types:

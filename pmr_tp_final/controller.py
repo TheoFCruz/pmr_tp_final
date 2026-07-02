@@ -6,6 +6,7 @@ import numpy as np
 import rclpy
 from crazyflie_interfaces.msg import LogDataGeneric
 from rclpy.node import Node
+from std_msgs.msg import Bool
 
 from pmr_tp_final.commander import AccelerationCommander
 from pmr_tp_final.constraints import (
@@ -38,10 +39,10 @@ class CbfAgentController(Node):
         self.declare_parameter("max_acceleration", 1.0)
         self.declare_parameter("robot_radius", 0.1)
         self.declare_parameter("safety_margin", 0.1)
-        self.declare_parameter("safety_alpha", 1.0)
-        self.declare_parameter("vo_alpha", 10.0)
-        self.declare_parameter("vo_slack_weight_gain", 1000.0)
-        self.declare_parameter("scenario_radius", 1.0)
+        self.declare_parameter("safety_alpha", 0.6)
+        self.declare_parameter("vo_alpha", 20.0)
+        self.declare_parameter("vo_slack_weight_gain", 600.0)
+        self.declare_parameter("scenario_radius", 1.5)
         self.declare_parameter("constraint_mode", "full")
 
         self._robot_id = self.get_parameter("robot_id").value
@@ -56,6 +57,7 @@ class CbfAgentController(Node):
         self._scenario_radius = float(self.get_parameter("scenario_radius").value)
         self._neighbor_names = self._make_neighbor_names()
         self._constraint_mode = self.get_parameter("constraint_mode").value
+        self._run_control = False
 
         self._constraints = self._make_constraints()
 
@@ -77,6 +79,12 @@ class CbfAgentController(Node):
             )
             for name in self._all_agent_names()
         ]
+        self._run_subscription = self.create_subscription(
+            Bool,
+            "/run",
+            self._run_callback,
+            10,
+        )
 
         self._commander = AccelerationCommander(
             node=self,
@@ -94,6 +102,10 @@ class CbfAgentController(Node):
             f"Neighbors: {self._neighbor_names}. "
             f"Constraint mode: {self._constraint_mode}"
         )
+
+    def _run_callback(self, msg: Bool) -> None:
+        """Gate closed-loop control from the shared /run topic."""
+        self._run_control = bool(msg.data)
 
     def _make_constraints(self) -> List[BaseConstraint]:
         """Create the active constraint set for the selected experiment mode."""
@@ -187,6 +199,9 @@ class CbfAgentController(Node):
             self.get_logger().debug("Waiting for ego state.")
             return
 
+        if not self._run_control:
+            return
+
         neighbors = {
             name: self._states[name]
             for name in self._neighbor_names
@@ -203,7 +218,7 @@ class CbfAgentController(Node):
     ) -> np.ndarray:
         """Compute the QP-filtered acceleration command."""
 
-        position_ref, start_ref, goal_ref = self._opposite_circle_reference()
+        position_ref = self._opposite_circle_reference()
         kp = 0.6
         kd = 1.0
 
@@ -231,10 +246,6 @@ class CbfAgentController(Node):
             a_cmd = self._clip_norm(-2.0 * ego.velocity, self._max_acceleration)
             self._visualizer.publish_all(
                 ego=ego,
-                neighbors=neighbors,
-                start=start_ref,
-                goal=goal_ref,
-                position_ref=position_ref,
                 nominal_accel=a_ref,
                 filtered_accel=a_cmd,
                 safety_margin=self._safety_margin,
@@ -244,29 +255,23 @@ class CbfAgentController(Node):
         a_cmd = np.array([ax, ay], dtype=float)
         self._visualizer.publish_all(
             ego=ego,
-            neighbors=neighbors,
-            start=start_ref,
-            goal=goal_ref,
-            position_ref=position_ref,
             nominal_accel=a_ref,
             filtered_accel=a_cmd,
             safety_margin=self._safety_margin,
         )
         return a_cmd
 
-    def _opposite_circle_reference(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _opposite_circle_reference(self) -> np.ndarray:
         """Return the fixed opposite point on the scenario circle."""
         if self._total_robots <= 0:
-            zero = np.zeros(2)
-            return zero, zero, zero
+            return np.zeros(2)
 
         theta = 2.0 * np.pi * self._robot_id / self._total_robots
         start = self._scenario_radius * np.array(
             [np.cos(theta), np.sin(theta)],
             dtype=float,
         )
-        goal = -start
-        return goal, start, goal
+        return -start
 
     @staticmethod
     def _clip_norm(vector: np.ndarray, max_norm: float) -> np.ndarray:

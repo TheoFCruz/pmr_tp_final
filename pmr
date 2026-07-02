@@ -11,6 +11,7 @@ STARTUP_DELAY="${STARTUP_DELAY:-5}"
 SIM_STARTUP_DELAY="${SIM_STARTUP_DELAY:-10}"
 TAKEOFF_DELAY="${TAKEOFF_DELAY:-3}"
 TAKEOFF_HEIGHT="${TAKEOFF_HEIGHT:-1.0}"
+USE_SIM_TIME="${USE_SIM_TIME:-true}"
 
 DOCKER_COMPOSE=(docker compose -f "$COMPOSE_FILE" --profile "$COMPOSE_PROFILE")
 BG_PIDS=()
@@ -36,7 +37,10 @@ Launches:
   takeoff | to [height]   Send takeoff command to all Crazyflies
   controllers | ctrl [ros2 launch args...]
                           Start pmr_tp_final controller.launch.py
-  rviz | rv               Start RViz with rviz/simul.rviz
+  rviz | rv [launch args...] Start RViz with rviz/simul.rviz
+  run | go [n]            Publish data: True on /run, waiting for n subscribers
+  bag-play | bp <bag> [ros2 bag play args...]
+                          Play a bag from ./bags with --clock enabled
   all | a [launch args...] Start containers, sim + Crazyswarm2 in background,
                           take off, then run controllers in the foreground.
                           Ctrl-C or controller exit stops the compose stack.
@@ -49,7 +53,8 @@ Other:
 
 Environment overrides:
   COMPOSE_FILE, COMPOSE_PROFILE, CRAZYSIM_SERVICE, PACKAGE_SERVICE,
-  BACKEND, STARTUP_DELAY, SIM_STARTUP_DELAY, TAKEOFF_DELAY, TAKEOFF_HEIGHT
+  BACKEND, STARTUP_DELAY, SIM_STARTUP_DELAY, TAKEOFF_DELAY, TAKEOFF_HEIGHT,
+  USE_SIM_TIME
 
 Examples:
   ./pmr up
@@ -57,6 +62,9 @@ Examples:
   ./pmr swarm-start cflib
   ./pmr controllers total_robots:=4
   ./pmr rviz
+  ./pmr rviz use_sim_time:=false
+  ./pmr run 4
+  ./pmr bag-play 4agents
   ./pmr circle-config 6 1.5
   ./pmr all total_robots:=6 scenario_radius:=1.5
   ./pmr takeoff 1.2
@@ -178,12 +186,67 @@ controllers_cmd() {
 }
 
 rviz_cmd() {
-  printf '%s' 'source /root/ros2_ws/install/setup.bash && ros2 launch pmr_tp_final rviz.launch.py'
+  local extra_args=""
+  local has_use_sim_time=0
+
+  for arg in "$@"; do
+    if [[ "$arg" == use_sim_time:=* ]]; then
+      has_use_sim_time=1
+      break
+    fi
+  done
+
+  if [[ "$has_use_sim_time" -eq 0 ]]; then
+    printf -v extra_args ' use_sim_time:=%q' "$USE_SIM_TIME"
+  fi
+
+  for arg in "$@"; do
+    local quoted_arg
+    printf -v quoted_arg ' %q' "$arg"
+    extra_args+="$quoted_arg"
+  done
+
+  printf 'source /root/ros2_ws/install/setup.bash && ros2 launch pmr_tp_final rviz.launch.py%s' "$extra_args"
 }
 
 takeoff_cmd() {
   local height="${1:-$TAKEOFF_HEIGHT}"
   printf 'source /CrazySim/crazyswarm2_ws/install/setup.bash && ros2 service call /all/takeoff crazyflie_interfaces/srv/Takeoff "{height: %s, duration: {sec: 2, nanosec: 0}}"' "$height"
+}
+
+run_cmd() {
+  local number_of_robots="$1"
+  printf 'source /root/ros2_ws/install/setup.bash && ros2 topic pub -1 -w %q /run std_msgs/msg/Bool "{data: True}"' "$number_of_robots"
+}
+
+bag_play_cmd() {
+  local bag="$1"
+  shift
+  local bag_path
+  local extra_args=""
+
+  case "$bag" in
+    /*)
+      bag_path="$bag"
+      ;;
+    ./*)
+      bag_path="/root/ros2_ws/src/pmr_tp_final/${bag#./}"
+      ;;
+    bags/*)
+      bag_path="/root/ros2_ws/src/pmr_tp_final/$bag"
+      ;;
+    *)
+      bag_path="/root/ros2_ws/src/pmr_tp_final/bags/$bag"
+      ;;
+  esac
+
+  for arg in "$@"; do
+    local quoted_arg
+    printf -v quoted_arg ' %q' "$arg"
+    extra_args+="$quoted_arg"
+  done
+
+  printf 'source /root/ros2_ws/install/setup.bash && ros2 bag play --clock %q%s' "$bag_path" "$extra_args"
 }
 
 sim_start() {
@@ -201,11 +264,36 @@ controllers_start() {
 
 rviz_start() {
   allow_xhost
-  exec_pkg "$(rviz_cmd)"
+  exec_pkg "$(rviz_cmd "$@")"
 }
 
 takeoff() {
   exec_sim "$(takeoff_cmd "${1:-$TAKEOFF_HEIGHT}")"
+}
+
+publish_run() {
+  local number_of_robots="${1:-4}"
+
+  if [[ "$#" -gt 1 ]]; then
+    echo "Usage: ./pmr run [number_of_robots]" >&2
+    return 2
+  fi
+
+  if ! [[ "$number_of_robots" =~ ^[0-9]+$ ]] || [[ "$number_of_robots" -le 0 ]]; then
+    echo "number_of_robots must be a positive integer" >&2
+    return 2
+  fi
+
+  exec_pkg "$(run_cmd "$number_of_robots")"
+}
+
+bag_play() {
+  if [[ "$#" -lt 1 ]]; then
+    echo "Usage: ./pmr bag-play <bag_name_or_path> [ros2 bag play args...]" >&2
+    return 2
+  fi
+
+  exec_pkg "$(bag_play_cmd "$@")"
 }
 
 build_ws() {
@@ -327,7 +415,13 @@ case "$cmd" in
     controllers_start "$@"
     ;;
   rviz|rv)
-    rviz_start
+    rviz_start "$@"
+    ;;
+  run|go)
+    publish_run "$@"
+    ;;
+  bag-play|bag|bp)
+    bag_play "$@"
     ;;
   all|a)
     all "$@"
