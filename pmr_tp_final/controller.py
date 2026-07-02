@@ -42,7 +42,6 @@ class CbfAgentController(Node):
         self.declare_parameter("vo_alpha", 10.0)
         self.declare_parameter("vo_slack_weight_gain", 1000.0)
         self.declare_parameter("scenario_radius", 1.0)
-        self.declare_parameter("preferred_velocity", 0.3)
         self.declare_parameter("constraint_mode", "full")
 
         self._robot_id = self.get_parameter("robot_id").value
@@ -55,10 +54,8 @@ class CbfAgentController(Node):
         self._robot_radius = self.get_parameter("robot_radius").value
         self._safety_margin = float(self.get_parameter("safety_margin").value)
         self._scenario_radius = float(self.get_parameter("scenario_radius").value)
-        self._preferred_velocity = float( self.get_parameter("preferred_velocity").value)
         self._neighbor_names = self._make_neighbor_names()
         self._constraint_mode = self.get_parameter("constraint_mode").value
-        self._start_time = self.get_clock().now()
 
         self._constraints = self._make_constraints()
 
@@ -206,13 +203,11 @@ class CbfAgentController(Node):
     ) -> np.ndarray:
         """Compute the QP-filtered acceleration command."""
 
-        position_ref, velocity_ref, start_ref, goal_ref = (
-            self._straight_line_reference()
-        )
-        kp = 1.0
-        kd = 1.4
+        position_ref, start_ref, goal_ref = self._opposite_circle_reference()
+        kp = 0.6
+        kd = 1.0
 
-        a_ref = kp * (position_ref - ego.position) + kd * (velocity_ref - ego.velocity)
+        a_ref = kp * (position_ref - ego.position) - kd * ego.velocity
         a_ref = self._clip_norm(a_ref, self._max_acceleration)
 
         self._optimizer.reset()
@@ -259,13 +254,11 @@ class CbfAgentController(Node):
         )
         return a_cmd
 
-    def _straight_line_reference(
-        self,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Return a constant-speed reference along the diameter swap line."""
+    def _opposite_circle_reference(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return the fixed opposite point on the scenario circle."""
         if self._total_robots <= 0:
             zero = np.zeros(2)
-            return zero, zero, zero, zero
+            return zero, zero, zero
 
         theta = 2.0 * np.pi * self._robot_id / self._total_robots
         start = self._scenario_radius * np.array(
@@ -273,23 +266,7 @@ class CbfAgentController(Node):
             dtype=float,
         )
         goal = -start
-        path = goal - start
-        path_length = float(np.linalg.norm(path))
-
-        if path_length == 0.0 or self._preferred_velocity <= 0.0:
-            return goal, np.zeros(2), start, goal
-
-        direction = path / path_length
-        elapsed = (self.get_clock().now() - self._start_time).nanoseconds * 1e-9
-        progress = min(self._preferred_velocity * elapsed, path_length)
-        position_ref = start + progress * direction
-
-        if progress >= path_length:
-            velocity_ref = np.zeros(2)
-        else:
-            velocity_ref = self._preferred_velocity * direction
-
-        return position_ref, velocity_ref, start, goal
+        return goal, start, goal
 
     @staticmethod
     def _clip_norm(vector: np.ndarray, max_norm: float) -> np.ndarray:

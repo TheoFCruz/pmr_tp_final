@@ -36,6 +36,7 @@ Launches:
   takeoff | to [height]   Send takeoff command to all Crazyflies
   controllers | ctrl [ros2 launch args...]
                           Start pmr_tp_final controller.launch.py
+  rviz | rv               Start RViz with rviz/simul.rviz
   all | a [launch args...] Start containers, sim + Crazyswarm2 in background,
                           take off, then run controllers in the foreground.
                           Ctrl-C or controller exit stops the compose stack.
@@ -55,6 +56,7 @@ Examples:
   ./pmr sim-start
   ./pmr swarm-start cflib
   ./pmr controllers total_robots:=4
+  ./pmr rviz
   ./pmr circle-config 6 1.5
   ./pmr all total_robots:=6 scenario_radius:=1.5
   ./pmr takeoff 1.2
@@ -175,6 +177,10 @@ controllers_cmd() {
   printf 'source /root/ros2_ws/install/setup.bash && ros2 launch pmr_tp_final controller.launch.py%s' "$extra_args"
 }
 
+rviz_cmd() {
+  printf '%s' 'source /root/ros2_ws/install/setup.bash && ros2 launch pmr_tp_final rviz.launch.py'
+}
+
 takeoff_cmd() {
   local height="${1:-$TAKEOFF_HEIGHT}"
   printf 'source /CrazySim/crazyswarm2_ws/install/setup.bash && ros2 service call /all/takeoff crazyflie_interfaces/srv/Takeoff "{height: %s, duration: {sec: 2, nanosec: 0}}"' "$height"
@@ -191,6 +197,11 @@ swarm_start() {
 
 controllers_start() {
   exec_pkg "$(controllers_cmd "$@")"
+}
+
+rviz_start() {
+  allow_xhost
+  exec_pkg "$(rviz_cmd)"
 }
 
 takeoff() {
@@ -314,6 +325,9 @@ case "$cmd" in
     ;;
   controllers|ctrl)
     controllers_start "$@"
+    ;;
+  rviz|rv)
+    rviz_start
     ;;
   all|a)
     all "$@"
