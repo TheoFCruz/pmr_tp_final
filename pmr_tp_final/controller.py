@@ -11,11 +11,11 @@ from pmr_tp_final.commander import AccelerationCommander
 from pmr_tp_final.constraints import (
     BaseConstraint,
     SafetyCbfConstraint,
-    VelocitySafetyCbfConstraint,
     VelocityObstacleCbfConstraint,
 )
 from pmr_tp_final.optimizer import AccelOptimizer, SolveStatus
 from pmr_tp_final.robot_model import Robot
+from pmr_tp_final.visualization import ControllerVisualizer
 
 
 class CbfAgentController(Node):
@@ -35,40 +35,40 @@ class CbfAgentController(Node):
         self.declare_parameter("control_period", 0.1)
         self.declare_parameter("fixed_z", 1.0)
         self.declare_parameter("max_velocity", 0.5)
-        self.declare_parameter("max_acceleration", 0.5)
+        self.declare_parameter("max_acceleration", 1.0)
         self.declare_parameter("robot_radius", 0.1)
         self.declare_parameter("safety_margin", 0.1)
         self.declare_parameter("safety_alpha", 1.0)
         self.declare_parameter("vo_alpha", 10.0)
         self.declare_parameter("vo_slack_weight_gain", 1000.0)
         self.declare_parameter("scenario_radius", 1.0)
+        self.declare_parameter("preferred_velocity", 0.3)
+        self.declare_parameter("constraint_mode", "full")
 
         self._robot_id = self.get_parameter("robot_id").value
         self._robot_prefix = self.get_parameter("robot_prefix").value
         self._total_robots = self.get_parameter("total_robots").value
         self._control_period = self.get_parameter("control_period").value
         self._robot_name = self._make_robot_name(self._robot_id)
+        self._fixed_z = float(self.get_parameter("fixed_z").value)
         self._max_acceleration = self.get_parameter("max_acceleration").value
         self._robot_radius = self.get_parameter("robot_radius").value
+        self._safety_margin = float(self.get_parameter("safety_margin").value)
         self._scenario_radius = float(self.get_parameter("scenario_radius").value)
+        self._preferred_velocity = float( self.get_parameter("preferred_velocity").value)
         self._neighbor_names = self._make_neighbor_names()
+        self._constraint_mode = self.get_parameter("constraint_mode").value
+        self._start_time = self.get_clock().now()
 
-        self._constraints: List[BaseConstraint] = [
-            SafetyCbfConstraint(
-                safety_margin=float(self.get_parameter("safety_margin").value),
-                max_acceleration=float(self._max_acceleration),
-                alpha=float(self.get_parameter("safety_alpha").value),
-            ),
-            VelocityObstacleCbfConstraint(
-                alpha=float(self.get_parameter("vo_alpha").value),
-                slack_weight_gain=float(
-                    self.get_parameter("vo_slack_weight_gain").value
-                ),
-            ),
-        ]
+        self._constraints = self._make_constraints()
 
         self._optimizer = AccelOptimizer()
         self._optimizer.initialize_model(float(self._max_acceleration))
+        self._visualizer = ControllerVisualizer(
+            node=self,
+            robot_name=self._robot_name,
+            fixed_z=self._fixed_z,
+        )
 
         self._states: Dict[str, Robot] = {}
         self._state_subscriptions = [
@@ -85,7 +85,7 @@ class CbfAgentController(Node):
             node=self,
             robot_name=self._robot_name,
             dt=self._control_period,
-            fixed_z=self.get_parameter("fixed_z").value,
+            fixed_z=self._fixed_z,
             max_velocity=self.get_parameter("max_velocity").value,
             max_acceleration=self.get_parameter("max_acceleration").value,
         )
@@ -94,7 +94,42 @@ class CbfAgentController(Node):
 
         self.get_logger().info(
             f"CBF agent controller started for {self._robot_name}. "
-            f"Neighbors: {self._neighbor_names}"
+            f"Neighbors: {self._neighbor_names}. "
+            f"Constraint mode: {self._constraint_mode}"
+        )
+
+    def _make_constraints(self) -> List[BaseConstraint]:
+        """Create the active constraint set for the selected experiment mode."""
+        if self._constraint_mode == "full":
+            return [
+                SafetyCbfConstraint(
+                    safety_margin=float(self.get_parameter("safety_margin").value),
+                    max_acceleration=float(self._max_acceleration),
+                    alpha=float(self.get_parameter("safety_alpha").value),
+                ),
+                VelocityObstacleCbfConstraint(
+                    alpha=float(self.get_parameter("vo_alpha").value),
+                    slack_weight_gain=float(
+                        self.get_parameter("vo_slack_weight_gain").value
+                    ),
+                    relaxed=True,
+                ),
+            ]
+
+        if self._constraint_mode == "vo_only":
+            return [
+                VelocityObstacleCbfConstraint(
+                    alpha=float(self.get_parameter("vo_alpha").value),
+                    slack_weight_gain=float(
+                        self.get_parameter("vo_slack_weight_gain").value
+                    ),
+                    relaxed=False,
+                )
+            ]
+
+        raise ValueError(
+            "constraint_mode must be one of: full, vo_only. "
+            f"Got {self._constraint_mode!r}."
         )
 
     def _all_agent_names(self) -> List[str]:
@@ -171,11 +206,13 @@ class CbfAgentController(Node):
     ) -> np.ndarray:
         """Compute the QP-filtered acceleration command."""
 
-        position_ref = self._opposite_circle_goal()
+        position_ref, velocity_ref, start_ref, goal_ref = (
+            self._straight_line_reference()
+        )
         kp = 1.0
         kd = 1.4
 
-        a_ref = kp * (position_ref - ego.position) - kd * ego.velocity
+        a_ref = kp * (position_ref - ego.position) + kd * (velocity_ref - ego.velocity)
         a_ref = self._clip_norm(a_ref, self._max_acceleration)
 
         self._optimizer.reset()
@@ -196,21 +233,63 @@ class CbfAgentController(Node):
             self.get_logger().warn(
                 f"Acceleration QP failed with status {status.value}; braking."
             )
-            return self._clip_norm(-2.0 * ego.velocity, self._max_acceleration)
+            a_cmd = self._clip_norm(-2.0 * ego.velocity, self._max_acceleration)
+            self._visualizer.publish_all(
+                ego=ego,
+                neighbors=neighbors,
+                start=start_ref,
+                goal=goal_ref,
+                position_ref=position_ref,
+                nominal_accel=a_ref,
+                filtered_accel=a_cmd,
+                safety_margin=self._safety_margin,
+            )
+            return a_cmd
 
-        return np.array([ax, ay], dtype=float)
+        a_cmd = np.array([ax, ay], dtype=float)
+        self._visualizer.publish_all(
+            ego=ego,
+            neighbors=neighbors,
+            start=start_ref,
+            goal=goal_ref,
+            position_ref=position_ref,
+            nominal_accel=a_ref,
+            filtered_accel=a_cmd,
+            safety_margin=self._safety_margin,
+        )
+        return a_cmd
 
-    def _opposite_circle_goal(self) -> np.ndarray:
-        """Return this robot's opposite point on the scenario circle."""
+    def _straight_line_reference(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Return a constant-speed reference along the diameter swap line."""
         if self._total_robots <= 0:
-            return np.zeros(2)
+            zero = np.zeros(2)
+            return zero, zero, zero, zero
 
         theta = 2.0 * np.pi * self._robot_id / self._total_robots
-        goal_theta = theta + np.pi
-        return self._scenario_radius * np.array(
-            [np.cos(goal_theta), np.sin(goal_theta)],
+        start = self._scenario_radius * np.array(
+            [np.cos(theta), np.sin(theta)],
             dtype=float,
         )
+        goal = -start
+        path = goal - start
+        path_length = float(np.linalg.norm(path))
+
+        if path_length == 0.0 or self._preferred_velocity <= 0.0:
+            return goal, np.zeros(2), start, goal
+
+        direction = path / path_length
+        elapsed = (self.get_clock().now() - self._start_time).nanoseconds * 1e-9
+        progress = min(self._preferred_velocity * elapsed, path_length)
+        position_ref = start + progress * direction
+
+        if progress >= path_length:
+            velocity_ref = np.zeros(2)
+        else:
+            velocity_ref = self._preferred_velocity * direction
+
+        return position_ref, velocity_ref, start, goal
 
     @staticmethod
     def _clip_norm(vector: np.ndarray, max_norm: float) -> np.ndarray:

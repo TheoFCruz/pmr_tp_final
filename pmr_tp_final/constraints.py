@@ -252,6 +252,7 @@ class VelocityObstacleCbfConstraint(BaseConstraint):
         self,
         alpha: float,
         slack_weight_gain: float,
+        relaxed: bool = True,
         min_distance: float = 1e-6,
         min_relative_speed: float = 1e-6,
         min_time_to_collision: float = 1e-3,
@@ -268,6 +269,7 @@ class VelocityObstacleCbfConstraint(BaseConstraint):
 
         self.alpha = float(alpha)
         self.slack_weight_gain = float(slack_weight_gain)
+        self.relaxed = bool(relaxed)
         self.min_distance = float(min_distance)
         self.min_relative_speed = float(min_relative_speed)
         self.min_time_to_collision = float(min_time_to_collision)
@@ -275,8 +277,8 @@ class VelocityObstacleCbfConstraint(BaseConstraint):
 
     @property
     def requires_slack(self) -> bool:
-        """VO constraints are relaxed with one slack variable per neighbor."""
-        return True
+        """Whether VO constraints are relaxed with one slack per neighbor."""
+        return self.relaxed
 
     def compute_terms(
         self,
@@ -358,12 +360,15 @@ class VelocityObstacleCbfConstraint(BaseConstraint):
             self.min_time_to_collision,
         )
 
-        return ConstraintTerm(
-            a_row=a_row,
-            b=float(b),
-            slack_label=slack_label,
-            slack_weight=float(slack_weight),
-        )
+        if self.relaxed:
+            return ConstraintTerm(
+                a_row=a_row,
+                b=float(b),
+                slack_label=slack_label,
+                slack_weight=float(slack_weight),
+            )
+
+        return ConstraintTerm(a_row=a_row, b=float(b))
 
     def _time_weight(
         self,
